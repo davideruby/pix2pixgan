@@ -1,0 +1,16 @@
+numpy==1.20.1
+pandas==1.2.3
+Pillow==8.1.2
+scikit-learn==0.24.1
+scipy==1.6.1
+tabulate==0.8.9
+#torch==1.8.0
+#torchvision==0.9.0
+tqdm==4.59.0
+wandb==0.10.22
+gdown==3.12.2
+segmentation-models-pytorch==0.1.3
+opencv-python==4.5.1.48
+albumentations==0.5.2
+pytorch_toolbelt==0.4.3
+monai==0.5.3

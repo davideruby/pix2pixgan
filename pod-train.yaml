@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+ name: unitopatho-generative-ddp-patches
+spec:
+  restartPolicy: Never
+  containers:
+    - name: train
+      image: daviderubinetti/unitopatho-generative:latest
+      resources:
+        limits:
+          nvidia.com/gpu: 2
+        requests:
+          nvidia.com/gpu: 2
+      volumeMounts:
+            - name: unitopatho #this is just a local name
+              mountPath: /data
+  volumes:
+      - name: unitopatho
+        persistentVolumeClaim:
+          claimName: unitopatho-shared
