@@ -3,13 +3,13 @@ import torch.nn as nn
 
 
 class Block(nn.Module):
-    def __init__(self, in_channels, out_channels, down=True, act="relu", use_dropout=False):
+    def __init__(self, in_channels, out_channels, down=True, act="relu", use_dropout=False, norm_layer=nn.BatchNorm2d):
         super(Block, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 4, 2, 1, bias=False, padding_mode="reflect")
             if down
             else nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            norm_layer(out_channels, affine=True, track_running_stats=True),
             nn.ReLU() if act == "relu" else nn.LeakyReLU(0.2),
         )
 
@@ -23,7 +23,7 @@ class Block(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3, features=64):
+    def __init__(self, in_channels=3, out_channels=3, features=64, norm_layer=nn.BatchNorm2d):
         super().__init__()
 
         # All ReLUs in the encoder are leaky, with slope 0.2, while ReLUs in the decoder are not leaky
@@ -32,21 +32,21 @@ class Generator(nn.Module):
             nn.Conv2d(in_channels, features, 4, 2, 1, padding_mode="reflect"),
             nn.LeakyReLU(0.2),
         )
-        self.down1 = Block(features, features * 2, down=True, act="leaky", use_dropout=False)
-        self.down2 = Block(features * 2, features * 4, down=True, act="leaky", use_dropout=False)
-        self.down3 = Block(features * 4, features * 8, down=True, act="leaky", use_dropout=False)
-        self.down4 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False)
-        self.down5 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False)
-        self.down6 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False)
+        self.down1 = Block(features, features * 2, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
+        self.down2 = Block(features * 2, features * 4, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
+        self.down3 = Block(features * 4, features * 8, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
+        self.down4 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
+        self.down5 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
+        self.down6 = Block(features * 8, features * 8, down=True, act="leaky", use_dropout=False, norm_layer=norm_layer)
         self.bottleneck = nn.Sequential(nn.Conv2d(features * 8, features * 8, 4, 2, 1), nn.ReLU())
 
-        self.up1 = Block(features * 8, features * 8, down=False, act="relu", use_dropout=True)
-        self.up2 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=True)
-        self.up3 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=True)
-        self.up4 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=False)
-        self.up5 = Block(features * 8 * 2, features * 4, down=False, act="relu", use_dropout=False)
-        self.up6 = Block(features * 4 * 2, features * 2, down=False, act="relu", use_dropout=False)
-        self.up7 = Block(features * 2 * 2, features, down=False, act="relu", use_dropout=False)
+        self.up1 = Block(features * 8, features * 8, down=False, act="relu", use_dropout=True, norm_layer=norm_layer)
+        self.up2 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=True, norm_layer=norm_layer)
+        self.up3 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=True, norm_layer=norm_layer)
+        self.up4 = Block(features * 8 * 2, features * 8, down=False, act="relu", use_dropout=False, norm_layer=norm_layer)
+        self.up5 = Block(features * 8 * 2, features * 4, down=False, act="relu", use_dropout=False, norm_layer=norm_layer)
+        self.up6 = Block(features * 4 * 2, features * 2, down=False, act="relu", use_dropout=False, norm_layer=norm_layer)
+        self.up7 = Block(features * 2 * 2, features, down=False, act="relu", use_dropout=False, norm_layer=norm_layer)
 
         self.final_up = nn.Sequential(
             nn.ConvTranspose2d(features * 2, out_channels, kernel_size=4, stride=2, padding=1),
@@ -75,6 +75,7 @@ class Generator(nn.Module):
 def test():
     x = torch.randn((5, 6, 256, 256)).cuda()
     model = Generator(in_channels=x.shape[1], features=64).cuda()
+    print(model)
     preds = model(x)
     print(preds.shape)
 

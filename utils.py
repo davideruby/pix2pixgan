@@ -24,18 +24,19 @@ def save_some_examples(gen, val_loader, epoch, folder):
     gen.train()
 
 
-def save_checkpoint(model, optimizer, filename="./model.pth"):
+def save_checkpoint(model, optimizer, filename="./model.pth", epoch=-1):
     print("=> Saving model")
     checkpoint = {
         "state_dict": model.state_dict(),
         "optimizer": optimizer.state_dict(),
+        "epoch": epoch
     }
     torch.save(checkpoint, filename)
 
 
-def load_checkpoint(checkpoint_file, model, optimizer, lr):
+def load_checkpoint(checkpoint_file, model, optimizer, lr, map_location="cpu"):
     print("=> Loading checkpoint", checkpoint_file)
-    checkpoint = torch.load(checkpoint_file, map_location=config.DEVICE)
+    checkpoint = torch.load(checkpoint_file, map_location=map_location)
     model.load_state_dict(checkpoint["state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer"])
 
@@ -69,3 +70,14 @@ def smooth_positive_labels(label):
 # smoothing class=0 to [0.0, 0.3]
 def smooth_negative_labels(label):
     return label + torch.rand_like(label) * 0.3
+
+
+class RandomRotate90(object):
+    """Randomly rotate the input by 90 degrees zero or more times."""
+    def __init__(self, p=0.5):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return torch.rot90(img, random.randint(0, 3), dims=(1, 2))
+        return img

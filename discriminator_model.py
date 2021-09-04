@@ -3,13 +3,13 @@ import torch.nn as nn
 
 
 class CNNBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride):
+    def __init__(self, in_channels, out_channels, stride, norm_layer=nn.BatchNorm2d):
         super(CNNBlock, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(
                 in_channels, out_channels, 4, stride, 1, bias=False, padding_mode="reflect"
             ),
-            nn.BatchNorm2d(out_channels),
+            norm_layer(out_channels, affine=True, track_running_stats=True),
             nn.LeakyReLU(0.2),
         )
 
@@ -18,18 +18,10 @@ class CNNBlock(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, in_channels=3, features=[64, 128, 256, 512]):
+    def __init__(self, in_channels=3, features=[64, 128, 256, 512], norm_layer=nn.BatchNorm2d):
         super().__init__()
         self.initial = nn.Sequential(
-            nn.Conv2d(
-                # in_channels * 2,
-                in_channels,
-                features[0],
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                padding_mode="reflect",
-            ),
+            nn.Conv2d(in_channels, features[0], kernel_size=4, stride=2, padding=1, padding_mode="reflect"),
             nn.LeakyReLU(0.2),
         )
 
@@ -37,17 +29,13 @@ class Discriminator(nn.Module):
         in_channels = features[0]
         for feature in features[1:]:
             layers.append(
-                CNNBlock(in_channels, feature, stride=1 if feature == features[-1] else 2),
+                CNNBlock(in_channels, feature, norm_layer=norm_layer, stride=1 if feature == features[-1] else 2),
             )
             in_channels = feature
 
-        layers.append(
-            nn.Conv2d(
-                in_channels, 1, kernel_size=4, stride=1, padding=1, padding_mode="reflect"
-            )
-        )
+        layers.append(nn.Conv2d(in_channels, 1, kernel_size=4, stride=1, padding=1, padding_mode="reflect"))
 
-        # the last sigmoid layer is not necessary if we use the BCEWithLogitsLoss()
+        # the last sigmoid layer is not necessary if we use BCEWithLogitsLoss()
         # layers.append(nn.Sigmoid())
 
         self.model = nn.Sequential(*layers)
@@ -62,7 +50,8 @@ class Discriminator(nn.Module):
 def test():
     x = torch.randn((5, 3, 256, 256))
     y = torch.randn((5, 3, 256, 256))
-    model = Discriminator(in_channels=x.shape[1] + y.shape[1])
+    model = Discriminator(in_channels=x.shape[1] + y.shape[1], norm_layer=nn.InstanceNorm2d)
+    print(model)
     preds = model(x, y)
     print(preds.shape)
 

@@ -11,10 +11,13 @@ COPY dataset/unitopatho.py /dataset/unitopatho.py
 COPY dataset/unitopatho_mask.py /dataset/unitopatho_mask.py
 COPY discriminator_model.py /discriminator_model.py
 COPY generator_model.py /generator_model.py
-#COPY train.py /train.py
-#COPY train_utp.py /train.py
-#COPY train_utp_ddp.py /train.py
-COPY train_utp_ddp_patches.py /train.py
 COPY utils.py /utils.py
 
-CMD ["python3", "/train.py"]
+#COPY train.py /train.py
+#COPY train_utp.py /train.py
+COPY train_utp_ddp.py /train.py
+COPY test.py /test.py
+#COPY train_pannuke_ddp.py /train.py
+
+#CMD ["python3", "-u", "/train.py"]
+CMD ["python3", "-u", "/test.py"]

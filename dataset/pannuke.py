@@ -3,6 +3,7 @@ import tarfile
 import gdown
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import torch
 import torch.nn as nn
@@ -140,13 +141,17 @@ def visualize(**images):
         plt.subplot(1, n, i + 1)
         plt.axis("off")
         plt.title(name)
-        plt.imshow(torchvision.utils.make_grid(imgs).permute(1, 2, 0))
+        plt.imshow(torchvision.utils.make_grid(imgs, nrow=4).permute(1, 2, 0))
+        # put those patched as legend-handles into the legend
+
+    patches = [mpatches.Patch(color=color, label=label) for color, label in CancerInstanceDataset.get_color_map().items()]
+    plt.legend(handles=patches, bbox_to_anchor=(-1, -0.5), borderaxespad=0.)
     plt.show()
 
 
 if __name__ == "__main__":
     dataset = CancerInstanceDataset(download=True)
-    loader = DataLoader(dataset, batch_size=10)
+    loader = DataLoader(dataset, batch_size=8, shuffle=True)
     batch = next(iter(loader))
     images, masks = batch
     print(images.shape, masks.shape)

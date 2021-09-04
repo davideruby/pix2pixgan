@@ -15,6 +15,8 @@ from generator_model import Generator
 import torch.optim as optim
 import utils
 import pandas as pd
+import time
+import sys
 
 
 def main():
@@ -26,6 +28,9 @@ def main():
     opt_gen = optim.Adam(gen.parameters(), lr=config.LEARNING_RATE, betas=(config.ADAM_BETA1, config.ADAM_BETA2))
     bce = nn.BCEWithLogitsLoss()
     l1_loss = nn.L1Loss()
+
+    print(disc)
+    print(gen)
 
     # weight initalization
     disc.apply(utils.init_weights)
@@ -41,23 +46,29 @@ def main():
     if config.LOG_WANDB:
         test_batch = next(iter(test_loader))
         test_batch_im, test_batch_masks = test_batch
+        test_batch_im = denormalize(test_batch_im)
         img_masks_test = [CancerInstanceDataset.get_img_mask(mask).permute(2, 0, 1) for mask in test_batch_masks]
         wandb.log({"Real": wandb.Image(torchvision.utils.make_grid(test_batch_im)),
                    "Masks": wandb.Image(torchvision.utils.make_grid(img_masks_test))})
 
     # training loop
     for epoch in range(config.NUM_EPOCHS):
-        g_loss, d_loss = train_fn(disc, gen, train_loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler)
+        g_adv_loss, g_l1_loss, d_loss = train_fn(disc, gen, train_loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler)
 
         if config.SAVE_MODEL and epoch % 5 == 0:
             utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN)
             utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC)
+            if config.LOG_WANDB:
+                wandb.save(config.CHECKPOINT_GEN)
+                wandb.save(config.CHECKPOINT_DISC)
 
         if config.LOG_WANDB:
             gen.eval()
             with torch.no_grad():
                 fakes = gen(test_batch_masks.to(config.DEVICE))
-                wandb.log({"generator_loss": g_loss,
+                fakes = denormalize(fakes)
+                wandb.log({"generator_adv_loss": g_adv_loss,
+                           "generator_l1_loss": g_l1_loss,
                            "discriminator_loss": d_loss,
                            "Fakes": wandb.Image(torchvision.utils.make_grid(fakes))})
             gen.train()
@@ -97,7 +108,8 @@ def wandb_log_generated_images(gen, loader, batch_to_log=5):
 def train_fn(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler):
     loop = tqdm(loader, leave=True)
     disc_losses = []
-    gen_losses = []
+    gen_l1_losses = []
+    gen_adv_losses = []
     gen.train()
     disc.train()
 
@@ -125,14 +137,10 @@ def train_fn(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_sca
             d_loss = (d_real_loss + d_fake_loss) / 2
             disc_losses.append(d_loss.item())
 
-            d_loss /= config.VIRTUAL_BATCH_SIZE
-
-        # Accumulates scaled gradients.
+        opt_disc.zero_grad()
         d_scaler.scale(d_loss).backward()
-        if (idx + 1) % config.VIRTUAL_BATCH_SIZE == 0:
-            d_scaler.step(opt_disc)
-            d_scaler.update()
-            opt_disc.zero_grad()
+        d_scaler.step(opt_disc)
+        d_scaler.update()
 
         # Train generator
         with torch.cuda.amp.autocast():
@@ -140,49 +148,44 @@ def train_fn(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_sca
             g_fake_loss = bce(d_fake, torch.ones_like(d_fake))
             l1 = l1_loss(image_fake, image_real) * config.L1_LAMBDA
             g_loss = g_fake_loss + l1
-            gen_losses.append(g_loss.item())
+            gen_l1_losses.append(l1.item())
+            gen_adv_losses.append(g_fake_loss.item())
 
-            g_loss /= config.VIRTUAL_BATCH_SIZE
-
-        # Accumulates scaled gradients.
+        opt_gen.zero_grad()
         g_scaler.scale(g_loss).backward()
-        if (idx + 1) % config.VIRTUAL_BATCH_SIZE == 0:
-            g_scaler.step(opt_gen)
-            g_scaler.update()
-            opt_gen.zero_grad()
+        g_scaler.step(opt_gen)
+        g_scaler.update()
 
-        if (idx + 1) % config.VIRTUAL_BATCH_SIZE == 0:
+        if (idx + 1) % 10 == 0:
             loop.set_postfix(
                 D_real=torch.sigmoid(d_real).mean().item(),
                 D_fake=torch.sigmoid(d_fake).mean().item(),
             )
 
-    return np.mean(gen_losses), np.mean(disc_losses)
+    return np.mean(gen_adv_losses), np.mean(gen_l1_losses), np.mean(disc_losses)
 
 
 def load_dataset_UTP():
     path = '../data/unitopath-public/800'
     path_masks = "../data/unitopath-public/generated"
+    crop = 256
 
     # training set
-    transform_train = albumentations.Compose([
-        albumentations.Resize(height=2048, width=2048),
-        albumentations.Flip(p=0.75),
-        albumentations.RandomRotate90(p=0.75),
-        albumentations.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ToTensorV2()
+    transform_train = torchvision.transforms.Compose([
+        torchvision.transforms.CenterCrop(crop),
+        torchvision.transforms.RandomHorizontalFlip(),
+        torchvision.transforms.RandomVerticalFlip(),
+        utils.RandomRotate90(),
     ])
     df = pd.read_csv(os.path.join(path, 'train.csv'))
     df = df[df.grade >= 0].copy()
-    train_dataset = UTP_Masks(df, T=transform_train, path=path, target='grade', path_masks=path_masks, train=True)
-    train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, batch_size=config.BATCH_SIZE,
-                                               pin_memory=True)
+    train_dataset = UTP_Masks(df, T=transform_train, path=path, target='grade', path_masks=path_masks, train=True,
+                              device=torch.cuda.current_device())
+    train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=True, batch_size=config.BATCH_SIZE)
 
     # test set
-    transform_test = albumentations.Compose([
-        albumentations.Resize(height=2048, width=2048),
-        albumentations.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ToTensorV2()
+    transform_test = torchvision.transforms.Compose([
+        torchvision.transforms.CenterCrop(crop),
     ])
     df = pd.read_csv(os.path.join(path, 'test.csv'))
     df = df[df.grade >= 0].copy()
@@ -196,11 +199,11 @@ def load_dataset_UTP():
 if __name__ == "__main__":
     if config.LOG_WANDB:
         # my W&B (Rubinetti)
-        # wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
+        wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
 
         # EIDOSLAB W&B
-        wandb.login(host='https://wandb.opendeephealth.di.unito.it',
-                    key='local-1390efeac4c23e0c7c9c0fad95f92d3c8345c606')
+        # wandb.login(host='https://wandb.opendeephealth.di.unito.it',
+        #             key='local-1390efeac4c23e0c7c9c0fad95f92d3c8345c606')
         wandb.init(project="unitopatho-generative",
                    config={
                        "seed": config.SEED,

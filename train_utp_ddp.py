@@ -1,92 +1,118 @@
 # https://yangkky.github.io/2019/07/08/distributed-pytorch-tutorial.html
+import math
 import os
-from tqdm import tqdm
 import numpy as np
-import albumentations
-import torchvision
-from albumentations.pytorch import ToTensorV2
-import wandb
-import config
+import pandas as pd
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+import wandb
+from tqdm import tqdm
+import config
+import utils
 from dataset.pannuke import CancerInstanceDataset, denormalize
 from dataset.unitopatho_mask import UTP_Masks
 from discriminator_model import Discriminator
 from generator_model import Generator
-import torch.optim as optim
-import utils
-import pandas as pd
-import torch.multiprocessing as mp
-import torch.distributed as dist
 
 
 def main(gpu):
     # DDP
-    print(f"#{gpu} started", flush=True)
+    print(f"GPU #{gpu} started")
     world_size = config.NGPU * config.NUM_NODES
     nr = 0  # it is the rank of the current node. Now we use only one node
     rank = nr * config.NGPU + gpu
     setup_ddp(rank, world_size)
     torch.cuda.set_device(gpu)
-    is_master = rank == 0  # only master logs
+    is_master = rank == 0
+    do_log = config.LOG_WANDB and is_master  # only master logs
+    if do_log:
+        wandb_init()
 
-    if config.LOG_WANDB and is_master:
-        init_wandb()
-
-    utils.set_seed(config.SEED)
+    # Load models
     num_classes = len(CancerInstanceDataset.labels())
     disc = Discriminator(in_channels=3 + num_classes).cuda(gpu)
     gen = Generator(in_channels=num_classes, features=64).cuda(gpu)
+    # Use SynchBatchNorm for Multi-GPU trainings
+    disc = nn.SyncBatchNorm.convert_sync_batchnorm(disc)
+    gen = nn.SyncBatchNorm.convert_sync_batchnorm(gen)
+    if do_log:
+        print(disc)
+        print(gen)
+
+    # DDP
+    disc = nn.parallel.DistributedDataParallel(disc, device_ids=[gpu])
+    gen = nn.parallel.DistributedDataParallel(gen, device_ids=[gpu])
+
+    # Optimizers
     opt_disc = optim.Adam(disc.parameters(), lr=config.LEARNING_RATE, betas=(config.ADAM_BETA1, config.ADAM_BETA2))
     opt_gen = optim.Adam(gen.parameters(), lr=config.LEARNING_RATE, betas=(config.ADAM_BETA1, config.ADAM_BETA2))
+
+    # Losses
     bce = nn.BCEWithLogitsLoss()
     l1_loss = nn.L1Loss()
 
-    # DDP
-    disc = nn.parallel.DistributedDataParallel(disc, device_ids=[gpu], broadcast_buffers=False)
-    gen = nn.parallel.DistributedDataParallel(gen, device_ids=[gpu], broadcast_buffers=False)
-
-    # weight initalization
-    disc.apply(utils.init_weights)
-    gen.apply(utils.init_weights)
+    # Load checkpoints from wandb
+    if config.LOAD_MODEL:
+        api = wandb.Api()
+        run = api.run("daviderubi/pix2pixgan/1l0hnnnn")  # upbeat-river-42
+        run.file("disc.pth").download(replace=True)
+        run.file("gen.pth").download(replace=True)
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+        utils.load_checkpoint("disc.pth", disc, opt_disc, config.LEARNING_RATE, map_location=map_location)
+        utils.load_checkpoint("gen.pth", gen, opt_gen, config.LEARNING_RATE, map_location=map_location)
 
     # load dataset
     train_loader, test_loader = load_dataset_UTP(rank, world_size)
 
-    # GradScaler
+    # grad_scaler
     g_scaler = torch.cuda.amp.GradScaler()
     d_scaler = torch.cuda.amp.GradScaler()
 
-    if config.LOG_WANDB and is_master:
-        test_batch = next(iter(test_loader))
-        test_batch_im, test_batch_masks = test_batch
+    if do_log:
+        # Get batch from testloader. Every epoch we will log the generated images for this batch on wandb.
+        test_batch_im, test_batch_masks = wandb_get_images_to_log(test_loader)
         img_masks_test = [CancerInstanceDataset.get_img_mask(mask).permute(2, 0, 1) for mask in test_batch_masks]
-        wandb.log({"Real": wandb.Image(torchvision.utils.make_grid(test_batch_im)),
-                   "Masks": wandb.Image(torchvision.utils.make_grid(img_masks_test))})
+        wandb.log({"Reals": wandb.Image(torchvision.utils.make_grid(test_batch_im), caption="Reals"),
+                   "Masks": wandb.Image(torchvision.utils.make_grid(img_masks_test), caption="Masks")})
 
     # training loop
     for epoch in range(config.NUM_EPOCHS):
-        g_loss, d_loss = train_fn(disc, gen, train_loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler, gpu)
+        g_adv_loss, g_l1_loss, d_loss = train_epoch(disc, gen, train_loader, opt_disc, opt_gen, l1_loss, bce, g_scaler,
+                                                    d_scaler, gpu)
 
-        if config.SAVE_MODEL and epoch % 5 == 0 and is_master:
-            utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN)
-            utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC)
+        if config.SAVE_MODEL and (epoch + 1) % 10 == 0 and is_master:
+            print(f"Saving checkpoint at epoch {epoch + 1}...")
+            utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN, epoch=epoch + 1)
+            utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC, epoch=epoch + 1)
+            if do_log:
+                wandb.save(config.CHECKPOINT_GEN)
+                wandb.save(config.CHECKPOINT_DISC)
 
-        if config.LOG_WANDB and is_master:
+        if do_log:
+            # Log generated images after the training epoch.
             gen.eval()
             with torch.no_grad():
                 fakes = gen(test_batch_masks.cuda(gpu))
-                wandb.log({"generator_loss": g_loss, "discriminator_loss": d_loss, "Fakes": wandb.Image(fakes)})
+                fakes = denormalize(fakes)
+                wandb.log({"generator_adv_loss": g_adv_loss,
+                           "generator_l1_loss": g_l1_loss,
+                           "discriminator_loss": d_loss,
+                           "Fakes": wandb.Image(fakes, caption="Fakes")})
             gen.train()
-        # break
 
-    # save gen and disc models
+    # Save generator and discriminator models.
     if is_master:
-        utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN)
-        utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC)
+        utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN, epoch=config.NUM_EPOCHS)
+        utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC, epoch=config.NUM_EPOCHS)
 
-    if config.LOG_WANDB and is_master:
-        wandb_log_generated_images(gen, test_loader)
+    if do_log:
+        # Log on wandb some generated images.
+        wandb_log_generated_images(gen, test_loader, batch_to_log=math.ceil(100 / config.BATCH_SIZE))
         wandb.finish()
 
     torch.distributed.barrier()
@@ -96,22 +122,16 @@ def main(gpu):
 def setup_ddp(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = os.environ.get("MASTER_PORT", "24129")
-    dist.init_process_group(
-        backend='nccl',
-        # init_method='env://',
-        world_size=world_size,
-        rank=rank
-    )
+    dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
 
 
-
-def init_wandb():
+def wandb_init():
     # my W&B (Rubinetti)
-    # wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
+    wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
 
     # EIDOSLAB W&B
-    wandb.login(host='https://wandb.opendeephealth.di.unito.it',
-                key='local-1390efeac4c23e0c7c9c0fad95f92d3c8345c606')
+    # wandb.login(host='https://wandb.opendeephealth.di.unito.it',
+    #             key='local-1390efeac4c23e0c7c9c0fad95f92d3c8345c606')
     wandb.init(project="unitopatho-generative",
                config={
                    "seed": config.SEED,
@@ -124,7 +144,7 @@ def init_wandb():
                    "adam_beta1": config.ADAM_BETA1,
                    "adam_beta2": config.ADAM_BETA2,
                    "batch_size": config.BATCH_SIZE,
-                   "virtual_batch_size": config.VIRTUAL_BATCH_SIZE,
+                   "he_norm": config.HE_NORM,
                    "smooth_positive_labels": config.SMOOTH_POSITIVE_LABELS,
                    "smooth_negative_labels": config.SMOOTH_NEGATIVE_LABELS
                })
@@ -136,48 +156,81 @@ def wandb_log_generated_images(gen, loader, batch_to_log=5):
     images_to_log = []
     gen.eval()
 
-    for idx_batch, (images_real, masks) in enumerate(loader):
-        images_real, masks = images_real.to(config.DEVICE), masks.to(config.DEVICE)
-
-        with torch.no_grad():
+    with torch.no_grad():
+        for idx_batch, sample in enumerate(loader):
+            reals = sample["image"].to(config.DEVICE)
+            masks = sample["mask"].to(config.DEVICE)
             fakes = gen(masks)
 
-            for idx_sample, fake_img in enumerate(fakes):  # for each sample in batch
-                real = denormalize(images_real[idx_sample]).cpu()
-                mask = CancerInstanceDataset.get_img_mask(masks[idx_sample].cpu()).permute(2, 0, 1).cpu()
-                fake = denormalize(fake_img).cpu()
+            for fake, real, mask in zip(fakes, reals, masks):  # for each element in batch
+                mask = CancerInstanceDataset.get_img_mask(mask.cpu()).permute(2, 0, 1).cpu()
+                real = denormalize(real).cpu()
+                fake = denormalize(fake).cpu()
                 images_to_log.append(torchvision.utils.make_grid([mask, real, fake]))
 
-        if idx_batch + 1 == batch_to_log:
-            break
+            if idx_batch + 1 == batch_to_log:
+                break
 
-    wandb.log({"Generated_images (mask-real-fake)": [wandb.Image(img) for img in images_to_log]})
+    wandb.log({"Generated_images (mask-real-fake)": [wandb.Image(img, caption="Mask - Real - Fake") for img in
+                                                     images_to_log]})
     gen.train()
 
 
-def train_fn(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler, gpu):
+def wandb_get_images_to_log(loader, num_img_to_log=10):
+    """
+    :param loader: loader of dataset.
+    :param num_img_to_log: how many images you want to log on wandb.
+    :return: num_img_to_log images and masks thought to be logged.
+    """
+    imgs = []
+    masks = []
+    count = 0
+
+    for img, mask in loader:
+        imgs.append(img)
+        masks.append(mask)
+        count += img.size()[0]
+        if count >= num_img_to_log:
+            break
+
+    test_batch_im = torch.cat(imgs, dim=0)[:num_img_to_log]
+    test_batch_mask = torch.cat(masks, dim=0)[:num_img_to_log]
+    test_batch_im = denormalize(test_batch_im)
+    return test_batch_im.cpu(), test_batch_mask.cpu()
+
+
+def train_epoch(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_scaler, gpu):
     loop = tqdm(loader, leave=True)
     do_log = gpu == 0
     disc_losses = []
-    gen_losses = []
+    gen_l1_losses = []
+    gen_adv_losses = []
     gen.train()
     disc.train()
+    five_crop = any(isinstance(tr, transforms.FiveCrop) for tr in loader.dataset.transform.transforms)
 
-    for idx, (image_real, mask) in enumerate(loop):
-        image_real = image_real.cuda(gpu)
-        mask = mask.cuda(gpu)
+    for idx, sample in enumerate(loop):
+        real_image = sample["image"].cuda(gpu)
+        mask = sample["mask"].cuda(gpu)
+
+        # fuse batch size and ncrops
+        if five_crop:
+            bs, ncrops, c_img, h, w = real_image.size()
+            c_mask = mask.size()[2]
+            real_image = real_image.view(-1, c_img, h, w)  # bs * ncrops, c, h, w
+            mask = mask.view(-1, c_mask, h, w)  # bs * ncrops, c, h, w
 
         # Train Discriminator
         with torch.cuda.amp.autocast():
-            image_fake = gen(mask)
+            fake_image = gen(mask)
             # real batch
-            d_real = disc(mask, image_real)
+            d_real = disc(mask, real_image)
             target = torch.ones_like(d_real)
             if config.SMOOTH_POSITIVE_LABELS:
                 target = utils.smooth_positive_labels(target)
             d_real_loss = bce(d_real, target)
             # fake batch
-            d_fake = disc(mask, image_fake.detach())
+            d_fake = disc(mask, fake_image.detach())
             target = torch.zeros_like(d_fake)
             if config.SMOOTH_NEGATIVE_LABELS:
                 target = utils.smooth_negative_labels(target)
@@ -187,71 +240,64 @@ def train_fn(disc, gen, loader, opt_disc, opt_gen, l1_loss, bce, g_scaler, d_sca
             d_loss = (d_real_loss + d_fake_loss) / 2
             disc_losses.append(d_loss.item())
 
-            d_loss /= config.VIRTUAL_BATCH_SIZE
-
-        # backward with gradient accumulation
+        opt_disc.zero_grad()
         d_scaler.scale(d_loss).backward()
-        if (idx + 1) % config.VIRTUAL_BATCH_SIZE == 0:
-            d_scaler.step(opt_disc)
-            d_scaler.update()
-            opt_disc.zero_grad()
+        d_scaler.step(opt_disc)
+        d_scaler.update()
 
         # Train generator
         with torch.cuda.amp.autocast():
-            d_fake = disc(mask, image_fake)
+            d_fake = disc(mask, fake_image)
             g_fake_loss = bce(d_fake, torch.ones_like(d_fake))
-            l1 = l1_loss(image_fake, image_real) * config.L1_LAMBDA
+            l1 = l1_loss(fake_image, real_image) * config.L1_LAMBDA
             g_loss = g_fake_loss + l1
-            gen_losses.append(g_loss.item())
+            gen_l1_losses.append(l1.item())
+            gen_adv_losses.append(g_fake_loss.item())
 
-            g_loss /= config.VIRTUAL_BATCH_SIZE
-
-        # backward with gradient accumulation
+        opt_gen.zero_grad()
         g_scaler.scale(g_loss).backward()
-        if (idx + 1) % config.VIRTUAL_BATCH_SIZE == 0:
-            g_scaler.step(opt_gen)
-            g_scaler.update()
-            opt_gen.zero_grad()
+        g_scaler.step(opt_gen)
+        g_scaler.update()
 
         if idx % 10 == 0 and do_log:
             loop.set_postfix(D_real=torch.sigmoid(d_real).mean().item(), D_fake=torch.sigmoid(d_fake).mean().item())
-        # break
-    return np.mean(gen_losses), np.mean(disc_losses)
+
+    return np.mean(gen_adv_losses), np.mean(gen_l1_losses), np.mean(disc_losses)
 
 
 def load_dataset_UTP(rank, world_size):
     path = '../data/unitopath-public/800'
-    path_masks = "../data/unitopath-public/generated"
+    mask_dir = "generated_torchstain" if config.HE_NORM else "generated"
+    path_masks = f"../data/unitopath-public/{mask_dir}"
+    crop_size = 256
 
     # training set
-    transform_train = albumentations.Compose([
-        albumentations.Resize(height=2048, width=2048),
-        albumentations.Flip(p=0.75),
-        albumentations.RandomRotate90(p=0.75),
-        albumentations.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ToTensorV2()
+    transform_train = transforms.Compose([
+        transforms.FiveCrop(crop_size),
+        transforms.Lambda(lambda crops: torch.stack([transforms.RandomHorizontalFlip()(crop) for crop in crops])),
+        transforms.Lambda(lambda crops: torch.stack([transforms.RandomVerticalFlip()(crop) for crop in crops])),
+        transforms.Lambda(lambda crops: torch.stack([utils.RandomRotate90()(crop) for crop in crops])),
     ])
     df = pd.read_csv(os.path.join(path, 'train.csv'))
     df = df[df.grade >= 0].copy()
-    train_dataset = UTP_Masks(df, T=transform_train, path=path, target='grade', path_masks=path_masks, train=True)
+    train_dataset = UTP_Masks(df, T=transform_train, path=path, target='grade', path_masks=path_masks, train=True,
+                              device=torch.cuda.current_device())
     # DDP
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=world_size, rank=rank)
     train_loader = torch.utils.data.DataLoader(train_dataset, shuffle=False, batch_size=config.BATCH_SIZE,
-                                               pin_memory=True, num_workers=config.NUM_WORKERS, sampler=train_sampler)
+                                               num_workers=config.NUM_WORKERS, sampler=train_sampler)
 
-    # test set
-    transform_test = albumentations.Compose([
-        albumentations.Resize(height=2048, width=2048),
-        albumentations.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ToTensorV2()
+    transform_test = transforms.Compose([
+        transforms.RandomCrop(1024),
     ])
     df = pd.read_csv(os.path.join(path, 'test.csv'))
     df = df[df.grade >= 0].copy()
-    test_dataset = UTP_Masks(df, T=transform_test, path=path, target='grade', path_masks=path_masks, train=False)
+    test_dataset = UTP_Masks(df, T=transform_test, path=path, target='grade', path_masks=path_masks, train=False,
+                             device=torch.cuda.current_device())
     # DDP
     test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset, num_replicas=world_size, rank=rank)
     test_loader = torch.utils.data.DataLoader(test_dataset, shuffle=False, batch_size=config.BATCH_SIZE,
-                                              pin_memory=True, num_workers=config.NUM_WORKERS, sampler=test_sampler)
+                                              num_workers=config.NUM_WORKERS, sampler=test_sampler)
 
     return train_loader, test_loader
 

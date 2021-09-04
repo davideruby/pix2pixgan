@@ -12,9 +12,26 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import wandb
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 torch.backends.cudnn.benchmark = True
 
+transform_training = A.Compose(
+    [
+        A.Flip(p=0.75),
+        A.RandomRotate90(p=0.75),
+        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        ToTensorV2(),
+    ]
+)
+
+transform_test = A.Compose(
+    [
+        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        ToTensorV2(),
+    ]
+)
 
 def main():
     num_classes = len(CancerInstanceDataset.labels())
@@ -34,16 +51,11 @@ def main():
         utils.load_checkpoint(config.CHECKPOINT_DISC, disc, opt_disc, config.LEARNING_RATE)
 
     # train loader
-    train_dataset = CancerInstanceDataset(train=True, transform=config.transform_training, download=True)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=True,
-        num_workers=config.NUM_WORKERS,
-    )
+    train_dataset = CancerInstanceDataset(train=True, transform=transform_training, download=True)
+    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS)
 
     # test loader
-    test_dataset = CancerInstanceDataset(train=False, transform=config.transform_test, download=True)
+    test_dataset = CancerInstanceDataset(train=False, transform=transform_test, download=True)
     test_loader = DataLoader(test_dataset, batch_size=config.BATCH_SIZE, shuffle=False)
 
     # GradScaler
@@ -72,6 +84,7 @@ def main():
             gen.eval()
             with torch.no_grad():
                 fakes = gen(test_batch_masks.to(config.DEVICE))
+                fakes = denormalize(fakes)
                 wandb.log({"generator_loss": g_loss,
                            "discriminator_loss": d_loss,
                            "Fakes": wandb.Image(torchvision.utils.make_grid(fakes))})
@@ -80,8 +93,6 @@ def main():
     # save gen and disc models
     utils.save_checkpoint(gen, opt_gen, filename=config.CHECKPOINT_GEN)
     utils.save_checkpoint(disc, opt_disc, filename=config.CHECKPOINT_DISC)
-
-    # show_generated_images(gen, test_loader)
 
     if config.LOG_WANDB:
         wandb_log_generated_images(gen, test_loader)
