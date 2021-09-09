@@ -1,10 +1,11 @@
+import os
 import torchvision
 from dataset.unitopatho import UTP
-from dataset.pannuke import CancerInstanceDataset
+from dataset.pannuke import PanNuke
 import torch
 
 
-class UTP_Masks(UTP):
+class UnitopathoMasks(UTP):
     def __init__(self, df, T, path, target, path_masks, train=True, device="cpu", subsample=-1, gray=False, mock=False):
         # super.__init() is called with T=None because we have to transform both image and mask together:
         # so when we call super().__get_item() we get the image not transformed
@@ -15,30 +16,29 @@ class UTP_Masks(UTP):
         self.device = device
 
     def read_mask(self, image_id):
-        filename = image_id.split('/')[-1].strip("'").strip(".png")
+        filename = image_id.split('/')[-1].strip("'")
         train = "training" if self.train else "test"
-        path = f"{self.path_masks}/{train}/masks/{filename}.png"
+        path = os.path.join(self.path_masks, train, "masks", filename)
         mask = torchvision.io.decode_png(torchvision.io.read_file(path)).to(self.device)
-        mask = mask.permute(1, 2, 0)
-        mask = mask / 255
+        mask = mask / 255.  # normalize to [0, 1]
 
         # convert mask from image (h, w, 3) to one hot (h, w, classes)
-        mask = self.convert_mask_from_img_to_one_hot(mask)  # H, W, classes
+        mask = self.convert_mask_to_one_hot(mask.permute(1, 2, 0))  # H, W, classes
 
         return mask
 
     # https://www.spacefish.biz/2020/11/rgb-segmentation-masks-to-classes-in-tensorflow/
-    def convert_mask_from_img_to_one_hot(self, mask):
+    def convert_mask_to_one_hot(self, mask):
         """
         :param mask: h, w, 3
-        :return: h, w, 6
+        :return: h, w, classes
         """
         def round(tensor, n_digits):  # round tensor to n_digits decimals
             return torch.round(tensor * 10 ** n_digits) / (10 ** n_digits)
 
         mask = round(mask, 2)
 
-        colors = [torch.Tensor(color).to(self.device) for color in CancerInstanceDataset.get_color_map().keys()]
+        colors = [torch.Tensor(color).to(self.device) for color in PanNuke.get_color_map().keys()]
         one_hot_map = []
         for color in colors:
             class_map = torch.all(torch.eq(mask, color), dim=-1)
@@ -48,57 +48,41 @@ class UTP_Masks(UTP):
         return one_hot_map.float()
 
     def __getitem__(self, index):
+        # get image
         image, target, image_id = super().__getitem__(index)
+        image = torch.from_numpy(image).float().to(self.device)  # H, W, 3
+        image /= 255.  # normalize to [0, 1]
+        image = image.permute(2, 0, 1)  # 3, H, W
 
-        image = torch.from_numpy(image).to(self.device)  # H, W, 3
+        # get mask
         mask = self.read_mask(image_id)  # H, W, classes
+        mask = mask.permute(2, 0, 1)  # classes, H, W
 
         # transformation
         if self.transform is not None:
-            image, mask = self.do_transformations(image, mask)
-        else:
-            image = torch.Tensor(image).permute(2, 0, 1)  # (3, H, W)
-            image /= 255.  # normalize to [0, 1]
-            mask = torch.Tensor(mask)
-            # make mask of shape (classes, H, W)
-            mask = mask.permute(2, 0, 1)
+            # do transformations and normalize image to [-1, 1]
+            image, mask = self.do_transformations(image, mask, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
         return {"image": image, "mask": mask, "target": target, "image_id": image_id}
 
-    def do_transformations(self, image, mask):
+    def do_transformations(self, image, mask, mean=None, std=None):
         """
-        :param image: H, W, 3
-        :param mask: H, W, classes
-        :return: img (3, H, W), mask (classes, H, W)
+        It transforms both image and mask according to self.transform.
+        It also normalizes the image with mean and standard deviation if provided.
+        :return: transformed img and mask
         """
-        image = image.permute(2, 0, 1)  # 3, H, W
-        mask = mask.permute(2, 0, 1)  # classes, H, W
-        ch = image.size()[0]  # 3 for RGB
+        img_ch = image.size()[0]  # 3 for RGB
+
         # transform both image and mask together
-        image_mask = self.transform(torch.cat((image, mask), dim=0))
+        image_mask = self.transform(torch.cat([image, mask], dim=0))
 
         there_is_five_crop = any(isinstance(tr, torchvision.transforms.FiveCrop) for tr in self.transform.transforms)
         if there_is_five_crop:
-            image, mask = image_mask[:, :ch, ...], image_mask[:, ch:, ...]
+            image, mask = image_mask[:, :img_ch, ...], image_mask[:, img_ch:, ...]
         else:
-            image, mask = image_mask[:ch, ...], image_mask[ch:, ...]
+            image, mask = image_mask[:img_ch, ...], image_mask[img_ch:, ...]
 
-        # normalize image in [-1, 1]
-        image = ((image / 255) - 0.5) / 0.5
+        if (mean is not None) and (std is not None):
+            image = torchvision.transforms.Normalize(mean=mean, std=std)(image)
 
         return image, mask
-
-# def convert_mask_from_img_to_one_hot(self, img):
-#     """
-#     :param img: image of the mask. Image must be normalized in [0, 1]. Shape: (H, W, 3)
-#     :return: a numpy array of the mask in one hot encoding. Shape: (H, W, classes)
-#     """
-#     img = np.round(img, 2)
-#     num_classes = len(CancerInstanceDataset.labels())
-#     one_hot = np.empty((img.shape[0], img.shape[1], num_classes))
-#     colors = CancerInstanceDataset.get_color_map().keys()
-#
-#     for idx_class, color in enumerate(colors):
-#         idxs = np.all(img[:, :] == color, axis=2)  # indices where the img is equal to the color of the class
-#         one_hot[:, :, idx_class][idxs] = 1
-#     return one_hot

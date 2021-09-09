@@ -12,12 +12,11 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 
 
-class CancerInstanceDataset(Dataset):
+class PanNuke(Dataset):
     """
     Dataset must have two directories: train, test
     train and test directory must have other two subdirectories: data, masks
     """
-
     def __init__(self, root_dir="./data", train=True, transform=None, download=False):
         self.train = train
         self.transform = transform
@@ -58,8 +57,7 @@ class CancerInstanceDataset(Dataset):
             transformed = self.transform(image=image, mask=mask.argmax(axis=2))
             image, mask = transformed["image"], transformed["mask"]  # (3, H, W), (H, W)
             # make mask one_hot
-            mask = nn.functional.one_hot(mask.long(),
-                                         num_classes=len(CancerInstanceDataset.labels())).float()  # (H, W, 6)
+            mask = nn.functional.one_hot(mask.long(), num_classes=len(PanNuke.labels())).float()  # (H, W, 6)
         else:
             image = torch.Tensor(image).permute(2, 0, 1)  # (3, H, W)
             image /= 255.  # normalize to [0, 1]
@@ -68,7 +66,7 @@ class CancerInstanceDataset(Dataset):
         # make mask of shape (6, H, W)
         mask = mask.permute(2, 0, 1)
 
-        return image, mask
+        return {"image": image, "mask": mask}
 
     @staticmethod
     def labels():
@@ -78,28 +76,27 @@ class CancerInstanceDataset(Dataset):
     @staticmethod
     def get_color_map():
         colors = ['b', 'g', 'r', 'c', 'm', 'w']
-        labels = CancerInstanceDataset.labels()
-        return {matplotlib.colors.to_rgb(colors[idx]): labels[idx] for idx in range(len(colors))}
+        labels = PanNuke.labels()
+        return {matplotlib.colors.to_rgb(color): label for color, label in zip(colors, labels)}
 
     @staticmethod
     def get_img_mask(mask):
         """
-            Get image of a mask.
+            Get image of the mask.
             mask shape: [num_classes, H, W]
-            :returns Tensor of shape (H, W, 3)
+            :returns image of the mask with shape (3, H, W)
         """
-        colors = list(CancerInstanceDataset.get_color_map().keys())
+        colors = list(PanNuke.get_color_map().keys())
+        labels = PanNuke.labels()
 
-        # create the mask as an image
         img_mask = np.empty((mask.shape[1], mask.shape[2], 3))
-        mask = torch.argmax(mask, dim=0)
+        mask = mask.argmax(dim=0)
 
         # assing to each label a color
-        for idx_lbl in range(len(CancerInstanceDataset.labels())):
-            idxs = mask == idx_lbl
-            img_mask[idxs] = colors[idx_lbl]
+        for idx_lbl in range(len(labels)):
+            img_mask[mask == idx_lbl] = colors[idx_lbl]
 
-        return torch.Tensor(img_mask)
+        return torch.from_numpy(img_mask).permute(2, 0, 1)
 
     def download(self):
         # Fetch data from Google Drive
@@ -125,14 +122,6 @@ class CancerInstanceDataset(Dataset):
         print('Done!')
 
 
-def denormalize(img):
-    """
-    :param img: image normalized in [-1, 1]
-    :return: img normalized in [0, 1]
-    """
-    return img * 0.5 + 0.5
-
-
 def visualize(**images):
     n = len(images)
     plt.figure(figsize=(35, 35))
@@ -142,20 +131,20 @@ def visualize(**images):
         plt.axis("off")
         plt.title(name)
         plt.imshow(torchvision.utils.make_grid(imgs, nrow=4).permute(1, 2, 0))
-        # put those patched as legend-handles into the legend
 
-    patches = [mpatches.Patch(color=color, label=label) for color, label in CancerInstanceDataset.get_color_map().items()]
+    # put those patched as legend-handles into the legend
+    patches = [mpatches.Patch(color=color, label=label) for color, label in PanNuke.get_color_map().items()]
     plt.legend(handles=patches, bbox_to_anchor=(-1, -0.5), borderaxespad=0.)
     plt.show()
 
 
 if __name__ == "__main__":
-    dataset = CancerInstanceDataset(download=True)
+    dataset = PanNuke(download=True)
     loader = DataLoader(dataset, batch_size=8, shuffle=True)
     batch = next(iter(loader))
     images, masks = batch
     print(images.shape, masks.shape)
     visualize(
         Images=images,
-        Masks=[CancerInstanceDataset.get_img_mask(mask).permute(2, 0, 1) for mask in masks],
+        Masks=[PanNuke.get_img_mask(mask) for mask in masks],
     )

@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
 import config
-from torchvision.utils import save_image
 import os
-from dataset.pannuke import denormalize
 import random
 import numpy as np
+import torch.distributed as dist
+from collections import OrderedDict
+from torchvision.utils import save_image
 
 
 def save_some_examples(gen, val_loader, epoch, folder):
@@ -70,6 +71,28 @@ def smooth_positive_labels(label):
 # smoothing class=0 to [0.0, 0.3]
 def smooth_negative_labels(label):
     return label + torch.rand_like(label) * 0.3
+
+
+def denormalize(img):
+    """
+    :param img: image normalized in [-1, 1]
+    :return: img normalized in [0, 1]
+    """
+    return img * 0.5 + 0.5
+
+
+def remove_module_key_from_state_dict(state_dict):
+    new_state_dict = OrderedDict()
+    for key, value in state_dict.items():
+        name = key.replace("module.", "")  # removing "module." from key. name = key[7:]
+        new_state_dict[name] = value
+    return new_state_dict
+
+
+def setup_ddp(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = os.environ.get("MASTER_PORT", "24129")
+    dist.init_process_group(backend='nccl', world_size=world_size, rank=rank)
 
 
 class RandomRotate90(object):

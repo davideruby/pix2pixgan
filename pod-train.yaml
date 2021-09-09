@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
- name: unitopatho-generative-generate-testset
+ name: unitopatho-generative-test-refactoring-utp
 spec:
   restartPolicy: Never
   containers:
@@ -9,9 +9,9 @@ spec:
       image: daviderubinetti/unitopatho-generative:latest
       resources:
         limits:
-          nvidia.com/gpu: 1
+          nvidia.com/gpu: 2
         requests:
-          nvidia.com/gpu: 1
+          nvidia.com/gpu: 2
       volumeMounts:
             - name: unitopatho #this is just a local name
               mountPath: /data

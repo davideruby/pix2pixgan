@@ -1,7 +1,6 @@
 import torch
 
 DEVICE = torch.device("cuda", 0) if torch.cuda.is_available() else "cpu"
-ROOT_DIR = "dataset/data"
 LEARNING_RATE = 2e-4
 BATCH_SIZE = 2
 NUM_WORKERS = 0
@@ -9,8 +8,8 @@ CHANNELS_IMG = 3
 L1_LAMBDA = 75
 ADAM_BETA1 = 0.5
 ADAM_BETA2 = 0.999
-NUM_EPOCHS = 200
-LOAD_MODEL = False
+NUM_EPOCHS = 150
+LOAD_MODEL = True
 SAVE_MODEL = True
 CHECKPOINT_DISC = "disc.pth"
 CHECKPOINT_GEN = "gen.pth"
@@ -21,3 +20,6 @@ HE_NORM = True
 SEED = 42
 NGPU = 2
 NUM_NODES = 1
+# WANDB_KEY_LOGIN = "58214c04801c157c99c68d2982affc49dd6e4072"  # Rubinetti
+WANDB_KEY_LOGIN = "3de574e841bb008af9a71ec114ffd6a3ad1846cf"  # Di Luccio
+# WANDB_KEY_LOGIN = 'local-1390efeac4c23e0c7c9c0fad95f92d3c8345c606'  # eidos
