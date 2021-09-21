@@ -9,22 +9,6 @@ from collections import OrderedDict
 from torchvision.utils import save_image
 
 
-def save_some_examples(gen, val_loader, epoch, folder):
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
-    image_real, mask = next(iter(val_loader))
-    image_real, mask = image_real.to(config.DEVICE), mask.to(config.DEVICE)
-    gen.eval()
-    with torch.no_grad():
-        y_fake = gen(mask)
-        save_image(denormalize(y_fake), folder + f"/y_gen_{epoch}.png")
-        # save_image(CancerInstanceDataset.get_img_mask(mask.cpu()).permute(1, 2, 0).cpu(), folder + f"/input_{epoch}.png")
-        if epoch == 0:
-            save_image(denormalize(image_real), folder + f"/label_{epoch}.png")
-    gen.train()
-
-
 def save_checkpoint(model, optimizer, filename="./model.pth", epoch=-1):
     print("=> Saving model")
     checkpoint = {
