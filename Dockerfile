@@ -1,4 +1,4 @@
-FROM carlduke/eidos-base:latest
+FROM carlduke/eidos-base:1
 
 # Install deps
 COPY requirements.txt /requirements.txt
@@ -18,5 +18,5 @@ COPY train_utils.py /train_utils.py
 COPY train_utp_ddp.py /train.py
 COPY test.py /test.py
 
-CMD ["python3", "-u", "/train.py"]
-#CMD ["python3", "-u", "/test.py"]
+#CMD ["python3", "-u", "/train.py"]
+CMD ["python3", "-u", "/test.py"]

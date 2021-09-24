@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
-import config
 import os
 import random
 import numpy as np
 import torch.distributed as dist
 from collections import OrderedDict
-from torchvision.utils import save_image
 
 
 def save_checkpoint(model, optimizer, filename="./model.pth", epoch=-1):

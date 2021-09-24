@@ -130,7 +130,7 @@ def visualize(**images):
         plt.subplot(1, n, i + 1)
         plt.axis("off")
         plt.title(name)
-        plt.imshow(torchvision.utils.make_grid(imgs, nrow=4).permute(1, 2, 0))
+        plt.imshow(torchvision.utils.make_grid(imgs, nrow=3).permute(1, 2, 0))
 
     # put those patched as legend-handles into the legend
     patches = [mpatches.Patch(color=color, label=label) for color, label in PanNuke.get_color_map().items()]

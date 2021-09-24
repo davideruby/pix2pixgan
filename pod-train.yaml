@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
- name: unitopatho-generative-test-refactoring-utp
+ name: unitopatho-generative
 spec:
   restartPolicy: Never
   containers:

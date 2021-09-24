@@ -12,8 +12,9 @@ from generator_model import Generator
 
 
 def main():
-    wandb_runpath = "daviderubi/unitopatho-generative/3slznzoq"  # scarlet-music-67
-    path_to_save = "../data/unitopath-public/synthetic_images/test"  # path to save images
+    # wandb_runpath = "daviderubi/unitopatho-generative/3slznzoq"  # scarlet-music-67
+    wandb_runpath = "daviderubi/unitopatho-generative/1cvb7cvd"  # smart-lake-59
+    path_to_save = "../data/unitopath-public/synthetic_images_smart_lake_59/test"  # path to save images
 
     # my W&B (Rubinetti)
     wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
