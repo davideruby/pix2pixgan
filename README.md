@@ -5,7 +5,7 @@ _From left to right: mask, real image, synthetic image._
 
 ## Overview of Code
 [dataset](./dataset) directory includes some dataset implemented in Pytorch, used to train the GAN. 
-* [pannuke.py](./dataset/pannuke.py) implements consists of the colon images taken from [PanNuke][2] dataset.
+* [pannuke.py](./dataset/pannuke.py) consists of the colon images taken from [PanNuke][2] dataset.
 You can download the dataset from:
     * [here](https://drive.google.com/uc?id=1_R3jCpMoNBA-vOkd_NJcHamZsv8E3v7Z): the dataset split is 0.9 training and 0.1 test, or
     * [here](https://drive.google.com/uc?id=1cR4FdnoVznh8ZXmAu6AZzbylfYouKRj1): the dataset split is 0.7 training and 0.3 test.
@@ -14,6 +14,7 @@ You can download the dataset from:
 
 [train_utils.py](train_utils.py) contains some general-purpose training methods used to train the GAN. For example it contains the method
 to train the generator and the discriminator for an epoch, or the methods to do wandb stuffs.
+
 In order to train a GAN, you can launch the following scripts:
 * [train_pannuke.py](train_pannuke.py): train the GAN on [PanNuke][2].
 * [train_pannuke_ddp.py](train_pannuke_ddp.py): train the GAN on [PanNuke][2] with multi-GPU training.
