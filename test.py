@@ -15,9 +15,10 @@ def main():
     # wandb_runpath = "daviderubi/unitopatho-generative/3slznzoq"  # scarlet-music-67
     wandb_runpath = "daviderubi/unitopatho-generative/1cvb7cvd"  # smart-lake-59
     path_to_save = "../data/unitopath-public/synthetic_images_smart_lake_59/test"  # path to save images
+    top_labels = ["HP", "NORM", "TA.HG", "TA.LG", "TVA.HG", "TVA.LG"]
 
     # my W&B (Rubinetti)
-    wandb.login(key="58214c04801c157c99c68d2982affc49dd6e4072")
+    wandb.login(key=config.WANDB_KEY_LOGIN)
 
     num_classes = len(PanNuke.labels())
     gen = Generator(in_channels=num_classes, features=64).to(config.DEVICE)
@@ -25,6 +26,11 @@ def main():
 
     # load testset
     test_loader = load_testset()
+
+    # create sub-directories for top labels
+    for lbl in top_labels:
+        if not os.path.exists(os.path.join(path_to_save, lbl)):
+            os.mkdir(os.path.join(path_to_save, lbl))
 
     # generate synthetic images
     gen.eval()
@@ -34,8 +40,9 @@ def main():
             generated_img = gen(mask)
 
             # save generated images
-            for img, image_id in zip(generated_img, sample["image_id"]):
-                save_image(img, path_to_save, image_id)
+            for img, image_id, target in zip(generated_img, sample["image_id"], sample["target"]):
+                label = top_labels[target.item()]
+                save_image(img, os.path.join(path_to_save, label), image_id)
 
             # log
             if (idx + 1) % 10 == 0:
@@ -61,8 +68,8 @@ def load_testset():
     ])
     df = pd.read_csv(os.path.join(path, 'test.csv'))
     df = df[df.grade >= 0].copy()
-    test_dataset = UnitopathoMasks(df, T=transform_test, path=path, target='grade', path_masks=path_masks, train=False,
-                                   device=torch.cuda.current_device())
+    test_dataset = UnitopathoMasks(df, T=transform_test, path=path, target='top_label', path_masks=path_masks,
+                                   train=False, device=torch.cuda.current_device())
     test_loader = torch.utils.data.DataLoader(test_dataset, shuffle=False, batch_size=1)
     return test_loader
 
