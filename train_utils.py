@@ -19,7 +19,6 @@ def wandb_init(wandb_key_login, project_name, host=None):
                config={
                    "seed": config.SEED,
                    "device": config.DEVICE,
-                   "root": config.ROOT_DIR,
                    "epochs": config.NUM_EPOCHS,
                    "lr": config.LEARNING_RATE,
                    "num_workers": config.NUM_WORKERS,
