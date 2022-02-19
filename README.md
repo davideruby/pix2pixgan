@@ -10,7 +10,7 @@ You can download the dataset from:
     * [here](https://drive.google.com/uc?id=1_R3jCpMoNBA-vOkd_NJcHamZsv8E3v7Z): the dataset split is 0.9 training and 0.1 test, or
     * [here](https://drive.google.com/uc?id=1cR4FdnoVznh8ZXmAu6AZzbylfYouKRj1): the dataset split is 0.7 training and 0.3 test.
 * [unitopatho.py](./dataset/unitopatho.py) is an implementation of [UniToPatho][3], which was taken from [here](https://github.com/EIDOSlab/UNITOPATHO/blob/main/unitopatho.py).
-* [unitopatho.py](./dataset/unitopatho_mask.py) inherits from [unitopatho.py](./dataset/unitopatho.py) and adds the feature of the masks to samples of [UniToPatho][3]. 
+* [unitopatho_mask.py](./dataset/unitopatho_mask.py) inherits from [unitopatho.py](./dataset/unitopatho.py) and adds the feature of the masks to samples of [UniToPatho][3]. 
 
 [train_utils.py](train_utils.py) contains some general-purpose training methods used to train the GAN. For example it contains the method
 to train the generator and the discriminator for an epoch, or the methods to do wandb stuffs.
